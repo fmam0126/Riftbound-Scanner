@@ -1,0 +1,42 @@
+{
+  "name": "riftbound-scanner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scan Riftbound: League of Legends TCG cards with your phone camera and track your collection.",
+  "main": "index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "prebuild": "expo prebuild",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test --experimental-test-isolation=none tests/*.test.ts",
+    "test:watch": "node --experimental-strip-types --test --watch --experimental-test-isolation=none tests/*.test.ts",
+    "build:cards": "node scripts/build-card-db.ts",
+    "build:cards:refresh": "node scripts/build-card-db.ts --force",
+    "verify:cards": "node scripts/build-card-db.ts --verify-only",
+    "strip:metadata": "node scripts/strip-image-metadata.ts"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-ml-kit/text-recognition": "2.0.0",
+    "@react-navigation/bottom-tabs": "^7.4.7",
+    "@react-navigation/native": "^7.1.17",
+    "expo": "~57.0.21",
+    "expo-camera": "~57.0.4",
+    "expo-dev-client": "~57.0.18",
+    "expo-haptics": "~57.0.2",
+    "expo-image-manipulator": "~57.0.16",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/react": "~19.2.2",
+    "typescript": "~5.9.2"
+  }
+}

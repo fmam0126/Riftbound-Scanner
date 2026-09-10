@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "Riftbound Scanner",
+    "slug": "riftbound-scanner",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "riftboundscanner",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "backgroundColor": "#0B1020",
+    "splash": {
+      "backgroundColor": "#0B1020",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.riftbound.scanner",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Riftbound Scanner uses the camera to read the collector number printed on your Riftbound cards."
+      }
+    },
+    "android": {
+      "package": "com.riftbound.scanner",
+      "edgeToEdgeEnabled": true,
+      "permissions": ["android.permission.CAMERA"],
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1020"
+      }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Riftbound Scanner uses the camera to read the collector number printed on your Riftbound cards.",
+          "recordAudioAndroid": false,
+          "microphonePermission": false
+        }
+      ]
+    ],
+    "extra": {
+      "cardDataVersion": 1
+    }
+  }
+}
