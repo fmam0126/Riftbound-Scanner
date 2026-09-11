@@ -152,6 +152,51 @@ Sealed product (booster boxes, champion decks, bundles) carries no `Number` fiel
 at all and is skipped. Regenerating reports every skipped product, so a change
 upstream is visible rather than silent.
 
+### 5. Exporting the collection
+
+Export is offered in two places — the button on the Collection screen and the
+**Export** tab — and both open the same sheet (`src/export/ExportProvider.tsx`
+owns its state, `src/components/ExportSheet.tsx` renders it). The Export tab has
+no screen of its own: its press is intercepted to open the sheet, navigating to
+the Collection screen first if you were somewhere else, so dismissing the sheet
+leaves you on your collection rather than back where you started.
+
+Two formats (`src/logic/exportCollection.ts`, pure and unit tested):
+
+| Format | Shape | For |
+| --- | --- | --- |
+| **Card list** | `2 OGN-007` per line | Pasting into a tracker's import box |
+| **Spreadsheet (CSV)** | one row per printing | Excel, Sheets, and sites that only take a file |
+
+The card code is the interchange format Riftbound tools actually share. It is
+what [Piltover Archive's own `@piltoverarchive/riftbound-deck-codes`
+library](https://www.npmjs.com/package/@piltoverarchive/riftbound-deck-codes)
+defines card identity as — `SET-NUMBER` plus an optional number prefix and variant
+suffix — and it is built from the card's parts rather than read from `card.id`,
+because `id` is the *base* number: the `a` in `OGN-007a` lives only on the variant
+field. Reading `id` would collapse a base printing and its alternate art into one
+indistinguishable code. TCGplayer's `*` for signed printings is written as the
+`s` that the same library documents.
+
+The CSV opens with `Amount, Name, Set Code, Set Name, Collector Number` — the run
+MythicHub and ManaBox both export — then adds Riftbound columns. Piltover Archive
+publishes no collection CSV, so this is the common convention plus enough columns
+to make the export complete rather than lossy. `Key` rides alongside `Card Code`
+for a reason: **40 promotional cards share one printed number** (`OPP-001` is
+three different cards), so a code alone cannot identify a row. `Key` is also what
+the collection is stored under, which makes the CSV a full backup.
+
+The card list deliberately has no header or comment lines even though that makes
+it less self-describing — importers vary in how forgiving they are, and several
+reject a file whose first line is not a card. It also never writes the `~2`
+disambiguator, since no other app would recognise it.
+
+Three ways out: **Copy** to the clipboard, **Share** through the OS share sheet
+(the file arrives as a named attachment, which is what a site's upload expects),
+and **Save** to a folder you pick — the Storage Access Framework on Android, the
+Files app on iOS. `src/export/deliver.ts` holds the routing; the screens hold no
+`Platform.OS` branch.
+
 ---
 
 ## Requirements
@@ -163,6 +208,9 @@ upstream is visible rather than silent.
   `@react-native-ml-kit/text-recognition`, a native module that Expo Go does not
   include. `expo-dev-client` is therefore a dependency, and the app must be
   launched from a development build rather than from Expo Go.
+- Export needs `expo-clipboard`, `expo-file-system` and `expo-sharing`. These are
+  also native modules, so an existing development build must be **rebuilt**
+  (`npx expo run:android`) before Export works — the same rebuild ML Kit needs.
 
 ## Setup
 
@@ -214,14 +262,15 @@ running as the development build.
 | --- | --- |
 | `npm start` | Start the Metro bundler for an installed dev build |
 | `npm run android` / `npm run ios` | Prebuild, compile and install natively |
-| `npm test` | Run the unit test suite (152 tests, no device needed) |
+| `npm test` | Run the unit test suite (185 tests, no device needed) |
 | `npm run typecheck` | TypeScript, no emit |
 | `npm run build:cards` | Regenerate the card database from TCGCSV |
 | `npm run verify:cards` | Validate the committed card database offline |
 
 Using the app: **Scan** to add cards, **Collection** to review progress (filter by
-set, sort, long-press a row to remove a copy), **Browse** to search the full
-database and add a card by hand when a scan will not read.
+set, sort, long-press a row to remove a copy), **Export** to get the collection out
+as a card list or a CSV, **Browse** to search the full database and add a card by
+hand when a scan will not read.
 
 ---
 
@@ -233,18 +282,22 @@ src/
     normalize.ts    Glyph-confusion model, digit/place-weighted distances
     parseOcr.ts     OCR text -> structured card identifier
     match.ts        Identifier -> card, with confidence and ambiguity handling
+    exportCollection.ts  Collection -> card-code list or CSV (pure)
   scan/
     geometry.ts     Where the number is on a card, and how that maps to a crop
     ocr.ts          Crop -> on-device ML Kit -> matcher
+  export/
+    deliver.ts      Clipboard, share sheet, and save-to-folder routing
+    ExportProvider.tsx  Export session state, shared by both entry points
   state/            Collection state, AsyncStorage persistence
   screens/          Scan, Collection, Browse
-  components/ui.tsx Shared presentational pieces
+  components/       ui.tsx shared pieces, ExportSheet.tsx
   data/cards.json   Generated card database (committed)
   types.ts          Shared domain types
 scripts/
   build-card-db.ts  TCGCSV -> data/cards.json
   strip-image-metadata.ts  Remove EXIF from a JPEG without re-encoding it
-tests/              152 unit tests over the pure logic, run against real data
+tests/              185 unit tests over the pure logic, run against real data
 testImage/
   ogn-160.jpg       Real card photo used to measure the card and label geometry
 ```
@@ -307,6 +360,17 @@ The test runner is Node's built-in one, so there is no bundler or transform step
 in the test path. `tests/cardData.test.ts` separately covers the generator's
 handling of the messy promo formats above.
 
+`tests/exportCollection.test.ts` pins both export formats against the real
+database, including the cases that would fail silently:
+
+- a card name containing a comma must stay in one CSV column, since Riftbound
+  names carry them routinely (`Darius, Trifarian`) and a shifted column still
+  looks fine in a text editor
+- a base printing and its alternate art must export as different card codes
+- an empty collection must produce an empty text file and a header-only CSV, and
+  the card list must never contain the `~2` disambiguator
+- exporting all 1414 cards must lose no row
+
 ## Known limitations
 
 - **The camera path is not verified end-to-end on a device.** The matcher and the
@@ -316,12 +380,21 @@ handling of the messy promo formats above.
   `testImage/ogn-160.jpg` and may want tuning; the whole-card and full-frame
   passes exist to cover a miss. The scanner prints which pass ran and what it read
   under the shutter button, which is the fastest way to see what is happening.
+- **The export delivery is not verified on a device either.** The formatting is
+  unit tested, but the clipboard, share sheet and folder pickers are native calls
+  that have not been exercised on hardware. The two formats are the part most
+  likely to need adjusting per destination site, and both are pure functions with
+  their own tests, so changing column names is a one-line edit.
 - **Card images** are loaded from TCGplayer's CDN by URL, so they need a network
   connection. Set `imageUrl` to `null` in the generator to work fully offline.
 - **Sets without cards** (Legacy, Radiance, Riftbound Bundles) appear in the
   database for completeness but have no scannable cards yet.
 - **Prices are not included.** TCGCSV publishes them separately and they change
   daily, so a bundled snapshot would be misleading.
+- **The export carries no condition, finish or language.** The collection model
+  has no field for them — the scanner records the printing, not the state of the
+  physical card — so a CSV written for a site whose columns include those leaves
+  them blank rather than inventing `NM`.
 
 ## Data attribution
 

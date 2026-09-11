@@ -3,6 +3,10 @@
  *
  * Rows are long-pressable to remove a copy, which is the only way to correct a
  * mistake that was already confirmed (undo only covers the most recent scan).
+ *
+ * The header action opens the export sheet. That sheet's state lives in
+ * `ExportProvider`, which is also what the **Export** tab drives, so both
+ * entry points open the same sheet.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -29,7 +33,8 @@ import {
 } from '../state/collection.ts';
 import { getDatabase } from '../data/cards.ts';
 import { useCollection } from '../state/CollectionProvider.tsx';
-import { CardRow, EmptyState, Loading } from '../components/ui.tsx';
+import { useExportSession } from '../export/ExportProvider.tsx';
+import { Button, CardRow, EmptyState, Loading } from '../components/ui.tsx';
 import { colors, fontSize, radius, spacing } from '../theme.ts';
 
 const SORTS: Array<{ key: CollectionSort; label: string }> = [
@@ -41,6 +46,7 @@ const SORTS: Array<{ key: CollectionSort; label: string }> = [
 
 export function CollectionScreen(): React.JSX.Element {
   const { collection, loading, removeCopies } = useCollection();
+  const { start: startExport } = useExportSession();
   const [filter, setFilter] = useState<CollectionFilter>(defaultFilter);
   const db = getDatabase();
 
@@ -118,6 +124,16 @@ export function CollectionScreen(): React.JSX.Element {
           hint={`of ${stats.totalCards}`}
         />
       </View>
+
+      {/* Disabled rather than hidden when there is nothing to export, so the
+          action is discoverable before the first scan. */}
+      <Button
+        label="Export collection"
+        variant="secondary"
+        disabled={stats.uniqueOwned === 0}
+        onPress={startExport}
+        style={styles.exportButton}
+      />
 
       <View style={styles.filters}>
         <TextInput
@@ -259,6 +275,11 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     paddingBottom: spacing.sm,
     gap: spacing.lg,
+  },
+  exportButton: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.sm,
   },
   stat: {
     flex: 1,
