@@ -4,8 +4,10 @@
  * Flow
  * ----
  * 1. The user frames the whole card in the outline.
- * 2. A scan runs on a timer when Auto is on (see `useAutoScan`), cropping to the
- *    known position of the collector number and reading it with on-device ML Kit.
+ * 2. A scan runs on a timer when Auto is on (see `useAutoScan`). OpenCV finds the
+ *    card in the frame and rectifies it (see `scan/cardDetect.ts`), and the
+ *    collector number is read from a strip of *that* card — so the outline is a
+ *    hint for aiming rather than a measurement the crop depends on.
  * 3. A confident match is recorded immediately. Anything the matcher is unsure
  *    about opens a confirm sheet listing the alternatives.
  * 4. A card **already in the collection is still recorded**, adding another copy.
@@ -18,11 +20,17 @@
  *
  * An undo action is offered after a save, and it also clears the sightings
  * window so the same card can be scanned again straight away.
+ *
+ * The rectified card is shown as a thumbnail next to the diagnostics: it is the
+ * clearest possible answer to "did the scanner find the card?", and it is the
+ * same image that a future recogniser working from card art rather than from text
+ * would be handed.
  */
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -36,6 +44,7 @@ import * as Haptics from 'expo-haptics';
 import type { CardRecord, MatchResult } from '../types.ts';
 import { AUTO_ACCEPT_CONFIDENCE, describeMatchKind } from '../logic/match.ts';
 import {
+  CARD_ASPECT,
   createScanner,
   guideForViewport,
   regionWithinGuide,
@@ -43,6 +52,7 @@ import {
   type CropRegion,
   type Scanner,
 } from '../scan/ocr.ts';
+import type { CardCrop } from '../scan/cardDetect.ts';
 import { AUTO_SCAN_INTERVAL_MS, useAutoScan } from '../scan/useAutoScan.ts';
 import { getDatabase } from '../data/cards.ts';
 import { useCollection } from '../state/CollectionProvider.tsx';
@@ -58,6 +68,26 @@ export function ScanScreen(): React.JSX.Element {
   const [result, setResult] = useState<MatchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<string | null>(null);
+
+  /**
+   * The card as the last scan found and straightened it.
+   *
+   * Kept so it can be shown: a failed scan is far easier to understand when the
+   * crop is visible next to it, and a *successful* one is only trustworthy
+   * because the crop can be checked by eye.
+   */
+  const [lastCrop, setLastCrop] = useState<CardCrop | null>(null);
+
+  /**
+   * Whether the last crop is being looked at full size.
+   *
+   * A thumbnail says *whether* detection found the card; this says what it
+   * actually cropped, which is what tuning the detector needs — and the corners
+   * it was found at are printed alongside, since those are the numbers to compare
+   * against the frame.
+   */
+  const [showCrop, setShowCrop] = useState(false);
+
   const [viewSize, setViewSize] = useState<{ width: number; height: number } | null>(null);
 
   /**
@@ -202,10 +232,20 @@ export function ScanScreen(): React.JSX.Element {
     );
 
     const read = outcome.text.replace(/\s+/g, ' ').trim().slice(0, 60);
+    // How the card was found, not just what it read: "no card in frame" and "a
+    // card was found but the number was unreadable" need different fixes from the
+    // user, and without this the two are indistinguishable.
+    const found =
+      outcome.card !== null
+        ? `card ${outcome.card.width}×${outcome.card.height} ` +
+        `(score ${outcome.card.score.toFixed(2)}, ${outcome.detection.durationMs}ms)`
+        : `card ${outcome.detection.status}: ${outcome.detection.detail}`;
+
+    setLastCrop(outcome.card);
     setDiagnostics(
-      `${outcome.pass} pass · ${outcome.durationMs}ms · ` +
-        `${outcome.attempts.length} crop${outcome.attempts.length === 1 ? '' : 's'} · ` +
-        `read ${JSON.stringify(read)}`,
+      `${found} · ${outcome.pass} pass · ${outcome.durationMs}ms · ` +
+      `${outcome.attempts.length} crop${outcome.attempts.length === 1 ? '' : 's'} · ` +
+      `read ${JSON.stringify(read)}`,
     );
 
     return outcome.match;
@@ -519,12 +559,58 @@ export function ScanScreen(): React.JSX.Element {
             </Pressable>
           </View>
 
-          {diagnostics !== null && <Text style={styles.diagnostics}>{diagnostics}</Text>}
+          {lastCrop !== null || diagnostics !== null ? (
+            <View style={styles.statusRow}>
+              {/* The card OpenCV found, as read. Both a check that detection is
+                  working and a preview of what an art-based recogniser would
+                  have to work with. */}
+              {lastCrop !== null && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Show the card as the scanner cropped it"
+                  onPress={() => setShowCrop(true)}
+                >
+                  <Image source={{ uri: lastCrop.uri }} style={styles.cropPreview} />
+                </Pressable>
+              )}
+              {diagnostics !== null && (
+                <Text style={[styles.diagnostics, styles.diagnosticsInline]}>
+                  {diagnostics}
+                </Text>
+              )}
+            </View>
+          ) : null}
         </View>
       </View>
 
       {phase === 'confirm' && result !== null && (
         <ConfirmSheet result={result} onPick={confirmCard} onCancel={dismiss} />
+      )}
+
+      {showCrop && lastCrop !== null && (
+        <View style={styles.cropSheet}>
+          <View style={styles.cropHeader}>
+            <Text style={styles.sheetTitle}>Detected card</Text>
+            <Text style={styles.sheetSubtitle}>
+              {lastCrop.width}×{lastCrop.height} · score {lastCrop.score.toFixed(2)} · corners{' '}
+              {lastCrop.corners
+                .map(
+                  (corner) =>
+                    `${Math.round(corner.x * 100)}%,${Math.round(corner.y * 100)}%`,
+                )
+                .join(' ')}
+            </Text>
+          </View>
+          {/* Contained rather than stretched: the point of looking at this is to
+              see the crop's proportions and where the number sits on it. */}
+          <Image
+            source={{ uri: lastCrop.uri }}
+            style={styles.cropFull}
+            resizeMode="contain"
+            accessibilityLabel="The card as the scanner cropped it"
+          />
+          <Button label="Close" variant="secondary" onPress={() => setShowCrop(false)} />
+        </View>
       )}
 
       {phase === 'error' && (
@@ -766,6 +852,25 @@ const styles = StyleSheet.create({
     fontSize: fontSize.xs,
     alignSelf: 'stretch',
   },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    alignSelf: 'stretch',
+  },
+  diagnosticsInline: {
+    flex: 1,
+  },
+  cropPreview: {
+    width: 54,
+    // The card's own proportions, so the thumbnail is a card rather than a
+    // square, and a bad crop is visible at a glance.
+    aspectRatio: CARD_ASPECT,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
   sheet: {
     position: 'absolute',
     left: 0,
@@ -814,6 +919,26 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: spacing.lg,
     gap: spacing.sm,
+  },
+  cropSheet: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: colors.background,
+    padding: spacing.lg,
+    paddingTop: spacing.xl,
+    gap: spacing.md,
+  },
+  cropHeader: {
+    gap: 2,
+  },
+  cropFull: {
+    flex: 1,
+    width: '100%',
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
   },
   errorTitle: {
     color: colors.text,

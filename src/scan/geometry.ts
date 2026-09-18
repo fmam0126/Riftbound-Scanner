@@ -72,6 +72,23 @@ export const WHOLE_CARD_IN_GUIDE = {
   height: 1,
 } as const;
 
+/**
+ * The collector-number label relative to the card *itself*.
+ *
+ * Deliberately the same numbers as {@link NUMBER_LABEL_IN_GUIDE}, and taken from
+ * it rather than copied so the two cannot drift apart: the guide is drawn at the
+ * card's own proportions and the user fits the card to it, which is what makes
+ * those fractions card-relative already.
+ *
+ * The distinction is the frame of reference, and it matters once the card is
+ * found by contour detection instead of by the guide: the rectified card image
+ * *is* the card, so the strip is taken from it directly, with no screen
+ * measurements involved and no dependence on the user having aligned anything.
+ * Rectification is what makes that exact rather than approximate: perspective is
+ * undone, so the same strip covers the same printed pixels on every card.
+ */
+export const NUMBER_LABEL_IN_CARD = { ...NUMBER_LABEL_IN_GUIDE };
+
 /** Combines a region expressed relative to the guide into frame fractions. */
 export function regionWithinGuide(guide: CropRegion, region: CropRegion): CropRegion {
   return {

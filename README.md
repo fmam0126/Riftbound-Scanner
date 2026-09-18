@@ -20,9 +20,10 @@ set size, carries no identifying information, and is present on every card — s
 the parser tolerates it rather than treating it as noise
 (`SET_TOTAL_SUFFIX` in `src/logic/parseOcr.ts`).
 
-The user frames the **whole card** in an outline that is itself card-shaped
-(63 × 88 mm). They never have to aim at the number: its position on the card is
-known, so the app derives the crop from the outline instead.
+The user holds the **whole card** inside an outline that is itself card-shaped
+(63 × 88 mm). They never have to aim at the number. The outline is how the user
+aims; the card itself is what gets cropped, because the app finds it first (see
+below) rather than trusting the outline to be where the card is.
 
 A scan then runs these passes (`src/scan/ocr.ts`), stopping at the first usable
 result:
@@ -31,18 +32,72 @@ result:
    Cleanest input, so it runs first and is usually the only pass needed.
 2. **`card`** — the whole card. Recovers a blurred or glared label by giving the
    matcher the card's *name* too, which is far more text to work with.
-3. **`frame`** — the uncropped photo, in case the outline was misaligned.
+3. **`frame`** — the uncropped photo, as a last resort when no card could be
+   found *and* the outline was misaligned, so nothing is known about where the
+   card is.
 
 Cropping is what makes this accurate: full-frame OCR returns the name, rules
 text, flavour text and type line, all of which is noise around a six-character
 identifier. The matcher tolerates the rest.
 
-The label strip is taken as fractions of the outline, so it follows wherever the
-user places the card. It deliberately overshoots the outline's left edge, because
-clipping the leading characters of the set code (`0GN` for `OGN`) costs a whole
-confidence tier, and the crop is clamped to the image so overshooting is free.
-The geometry lives in `src/scan/geometry.ts`, free of native imports so it can be
-unit tested.
+The label strip is a fixed fraction of the card — 74% of its width, starting at
+84% of its height — because the number is always printed in the same place. The
+strip deliberately overshoots the card's left edge, because clipping the leading
+characters of the set code (`0GN` for `OGN`) costs a whole confidence tier, and
+the crop is clamped to the image so overshooting is free. The fractions live in
+`src/scan/geometry.ts`, free of native imports so they can be unit tested.
+
+### 1a. Finding the card
+
+Before anything is read, **OpenCV finds the card in the frame and straightens
+it** (`src/scan/cardDetect.ts`). This is what the first two passes above read
+from, and it is why a card can be held crooked, slightly small, or half out of the
+outline and still scan.
+
+The pipeline is OpenCV's document-scanner recipe, in its usual order:
+
+| Step | Why |
+| --- | --- |
+| `cvtColor` + `GaussianBlur` | Work on intensity, and drop sensor noise and card-art texture before looking for edges. |
+| `Canny` | The card's border against its background is the strongest edge in the frame, and Canny works by gradient, so it behaves the same on a bright table and a dark one. |
+| `dilate` | A Canny edge is one pixel wide and breaks where a border is soft; thickening it closes those gaps so the border traces as one loop. |
+| `findContours` + `approxPolyDP` | Turn each loop into a polygon, and keep the ones that are four-sided. |
+| `getPerspectiveTransform` + `warpPerspective` | Map the winning corners onto a rectangle of the card's true proportions, undoing the perspective the camera added. |
+
+Choosing between the four-sided candidates is the part worth testing, so it lives
+in `src/scan/quad.ts`, pure and unit tested: each candidate is scored on **size**
+(the card is the thing the camera is pointed at) and **shape** (rectangularity
+multiplied by how close its proportions are to a card's). Shape is the half that
+cannot be faked by being large, which is what keeps a shelf edge or a doorway from
+winning. A candidate that cannot be a card — concave, tilted near 45°, or lying on
+its side — is refused outright, and so is anything scoring below `MIN_CARD_SCORE`.
+Refusing is deliberate and cheap: the crop falls back to the outline, which is
+what the app did before it could find cards at all, whereas a *wrong* crop sends
+the text recogniser somewhere the number is not printed.
+
+**Why contour detection rather than a trained model.** Issue #1 suggested YOLOv8-nano,
+and for this problem the classical approach is the better tool. A card is a
+high-contrast quadrilateral with fixed, known proportions (63 × 88 mm); the only
+things that vary are where it sits in the frame and how it is tilted, and that is
+exactly what contours and a four-point transform measure directly. There is no
+model to ship, no training data, no inference cost per frame, and no result that
+can only be explained after the fact. A detector such as YOLOv8-nano answers a
+harder question — *what kind of object is this* — which this app never has to ask,
+because there is exactly one kind of object in front of the camera and its
+geometry is already known.
+
+The rectified card is written to the app's cache as a PNG (lossless, because the
+next thing that happens to it is text recognition on a small high-contrast number)
+and shown as a thumbnail next to the diagnostics line under the shutter button. A
+couple of previous crops are kept and older ones pruned on every scan, since Auto
+produces one every 1.8 seconds. The rectified card is handed back to the caller in
+`OcrOutcome.card`, along with the corners it was found at — it is the right input
+for recognising a card by its **art** rather than by its text, which needs no OCR
+at all.
+
+Detection needs the native OpenCV module, so a development build made before it
+was added reports `card unavailable: OpenCV is not in this build` and quietly uses
+the outline crop instead. Rebuild with `npx expo run:android` to turn it on.
 
 ### 1b. Scanning continuously
 
@@ -211,6 +266,12 @@ Files app on iOS. `src/export/deliver.ts` holds the routing; the screens hold no
 - Export needs `expo-clipboard`, `expo-file-system` and `expo-sharing`. These are
   also native modules, so an existing development build must be **rebuilt**
   (`npx expo run:android`) before Export works — the same rebuild ML Kit needs.
+- Card detection needs `react-native-fast-opencv`, which links a prebuilt OpenCV
+  (4.12 on Android, 4.9 on iOS) and, like the rest, requires a development build
+  and a native rebuild. It also requires the New Architecture, which this project
+  already enables (`newArchEnabled` in `app.json`). The app runs without it —
+  detection reports itself unavailable and the outline crop is used — so a stale
+  build degrades rather than breaking.
 
 ## Setup
 
@@ -256,13 +317,18 @@ The error is harmless in itself — the scan falls through all three OCR passes 
 reports "No card recognised" — but no card will ever be read until the app is
 running as the development build.
 
+OpenCV says a similar thing, in a way that does not look like an error at all. If
+the diagnostics line reads `card unavailable: OpenCV is not in this build`, the
+build predates `react-native-fast-opencv`: scans still work, cropping to the
+outline rather than to a card the app found, and a rebuild is what changes that.
+
 ## Scripts
 
 | Command | Purpose |
 | --- | --- |
 | `npm start` | Start the Metro bundler for an installed dev build |
 | `npm run android` / `npm run ios` | Prebuild, compile and install natively |
-| `npm test` | Run the unit test suite (185 tests, no device needed) |
+| `npm test` | Run the unit test suite (211 tests, no device needed) |
 | `npm run typecheck` | TypeScript, no emit |
 | `npm run build:cards` | Regenerate the card database from TCGCSV |
 | `npm run verify:cards` | Validate the committed card database offline |
@@ -285,7 +351,9 @@ src/
     exportCollection.ts  Collection -> card-code list or CSV (pure)
   scan/
     geometry.ts     Where the number is on a card, and how that maps to a crop
-    ocr.ts          Crop -> on-device ML Kit -> matcher
+    quad.ts         Which four-sided contour is the card, and how good it is (pure)
+    cardDetect.ts   OpenCV: find the card, straighten it, write it to the cache
+    ocr.ts          Rectified card -> on-device ML Kit -> matcher
   export/
     deliver.ts      Clipboard, share sheet, and save-to-folder routing
     ExportProvider.tsx  Export session state, shared by both entry points
@@ -297,7 +365,7 @@ src/
 scripts/
   build-card-db.ts  TCGCSV -> data/cards.json
   strip-image-metadata.ts  Remove EXIF from a JPEG without re-encoding it
-tests/              185 unit tests over the pure logic, run against real data
+tests/              211 unit tests over the pure logic, run against real data
 testImage/
   ogn-160.jpg       Real card photo used to measure the card and label geometry
 ```
@@ -356,6 +424,15 @@ measured position on the real photo, and that the card outline stays card-shaped
 and fully on-screen across viewports from a 360 × 640 phone to a tablet in
 landscape.
 
+`tests/cardQuad.test.ts` covers the decisions the card detector makes once OpenCV
+has produced candidate corners: that a card can be labelled top-left first however
+the contour was ordered or tilted, that a card on its side or held near 45° is
+refused rather than rectified upside down, that a card-sized shape beats a
+larger region whose proportions are wrong, and that the rectified image always
+comes out in a card's proportions. The OpenCV calls themselves are the one part
+that cannot run without a device, which is exactly why everything downstream of
+them is pure.
+
 The test runner is Node's built-in one, so there is no bundler or transform step
 in the test path. `tests/cardData.test.ts` separately covers the generator's
 handling of the messy promo formats above.
@@ -380,6 +457,16 @@ database, including the cases that would fail silently:
   `testImage/ogn-160.jpg` and may want tuning; the whole-card and full-frame
   passes exist to cover a miss. The scanner prints which pass ran and what it read
   under the shutter button, which is the fastest way to see what is happening.
+- **Card detection has not seen a real frame either.** The pipeline is OpenCV's
+  own recipe and the candidate scoring is unit tested, but the thresholds in
+  `src/scan/cardDetect.ts` (Canny's 40/140, the 480 px detection width, the 0.02
+  polygon tolerance) are starting points, not measured values. The diagnostics
+  line prints how many candidates were scored, what the winner scored, and the
+  size of the crop, which is what to tune against; the thumbnail next to it shows
+  the crop itself, so a wrong crop is visible rather than merely inferred. A card
+  held on its side, or at about 45°, is deliberately *not* detected, because
+  nothing in the geometry says which way up it is — those scans fall back to the
+  outline crop.
 - **The export delivery is not verified on a device either.** The formatting is
   unit tested, but the clipboard, share sheet and folder pickers are native calls
   that have not been exercised on hardware. The two formats are the part most
